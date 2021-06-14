@@ -1,0 +1,150 @@
+---
+title: "Codes for Final Project"
+author: "HANH_NGUYEN"
+date: "4/19/2020"
+output: word_document
+---
+# 0. Neccessary libraries
+
+```{r, eval = F, echo = T}
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(caret) #train test split
+library(rsample) #vfold
+library(purrr) #map
+library(e1071) # SVM
+library(svrpath) #lasso L1 penalty 
+library(tidyr)
+library(visdat) #for visualizing missing values distribution
+library(naniar) #for finding variables with missing values
+library(Metrics) #for accuracy calculation
+library(glmnet) # for glmnet
+library(psych) #for multihistogram
+```
+
+# 1. Exploring distributions of arm, lrna and cd4
+
+```{r, eval = F, echo = T}
+# multi histogram of predictors: lrna0, lrna1, lrna2, cd40, cd41, cd42
+multi.hist(total_data[,2:7])
+
+# bar plot of number of patients in each arm
+ggplot(total_data,aes(x = arm)) + geom_histogram(binwidth = 0.5, stat = "count")
+
+# boxplot of mean values of lrna0, lrna1, lrna2
+# box plot of mean values of cd40, cd41, cd42
+total_data.extract <- total_data[,2:8]
+total_data.extract <- gather(total_data.extract, 'features', 'value', 1:6)
+ggplot(total_data.extract[1:nrow(total_data.extract)/2,], aes(x = arm, y = value)) + 
+  geom_boxplot() + facet_wrap(~ features) + labs(title = "Mean values of Lrna0, Lrna1 and Lrna2")
+ggplot(total_data.extract[(nrow(total_data.extract)/2+1):nrow(total_data.extract),], aes(x = arm, y = value)) + 
+  geom_boxplot() + facet_wrap(~ features) + labs(title = "Mean values of cd40, cd41 and cd42")
+```
+
+# 2. Missing value distribution
+
+```{r, echo = T, eval = F}
+sum(is.na(total_data))
+total_data.imputed <- total_data %>% bind_shadow(only_miss = T)
+missing_var = c('pr6_NA','pr6',
+                'pr7_NA','pr7',
+                'pr8_NA','pr8',
+                'pr9_NA','pr9',
+                'pr99_NA','pr99',
+                'rt38_NA','rt38',
+                'rt39_NA','rt39',
+                'rt40_NA','rt40',
+                'rt238_NA','rt238',
+                'rt239_NA','rt239',
+                'rt240_NA','rt240')
+total_data.imputed <- total_data.imputed[, colnames(total_data.imputed) %in% missing_var]
+vis_miss(total_data.imputed[,1:11])
+total_data <- total_data %>% na.omit()
+```
+
+# 3. Find correlation pattern and delete highly correlated variables
+
+```{r}
+# Objective: run a correlation and drop the insignificant ones: Figure 6
+
+# Correlation matrix:
+corr <- cor(total_data[, !colnames(total_data) %in% c('arm','patid')])
+#prepare to drop duplicates and correlations of 1    
+corr[lower.tri(corr,diag = TRUE)] <- NA
+# drop perfect correlation
+corr[corr == 1] <- NA
+#turn into a 3-column table
+corr <- as.data.frame(as.table(corr))
+#remove the NA values from above 
+corr <- na.omit(corr) 
+#select significant values  
+corr <- subset(corr, abs(Freq) > 0.6) 
+#sort by highest correlation
+corr <- corr[order(-abs(corr$Freq)),] 
+#turn corr back into matrix in order to plot with corrplot
+mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+#plot correlations visually
+corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ")
+```
+
+```{r}
+# Objective: run a correlation and drop the insignificant ones: Figure 7
+# Correlation matrix:
+corr <- cor(total_data.processed[, !colnames(total_data.processed) %in% c('arm','patid')])
+#prepare to drop duplicates and correlations of 1    
+corr[lower.tri(corr,diag = TRUE)] <- NA
+# drop perfect correlation
+corr[corr == 1] <- NA
+#turn into a 3-column table
+corr <- as.data.frame(as.table(corr))
+#remove the NA values from above 
+corr <- na.omit(corr) 
+#select significant values  
+corr <- subset(corr, abs(Freq) > 0.4) 
+#sort by highest correlation
+corr <- corr[order(-abs(corr$Freq)),] 
+#turn corr back into matrix in order to plot with corrplot
+mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+#plot correlations visually
+corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ",method='number')
+```
+
+
+# Preprocessing data
+```{r}
+#combine 3 datasets
+total_data <- merge(merge(dat384,prmut0, by = "patid"),rtmut0, by = "patid") #879 obs, 305 var
+total_data$arm <- factor(total_data$arm) # factorize and numerize arm attribute
+total_data <- total_data %>% na.omit() #855 obs left
+total_data <- total_data[, ! colnames(total_data) %in% c("patid")] #304 variables
+total_data_normalize<- predict(preProcess(total_data[,1:3], method=c('YeoJohnson')), total_data) #normalize lrna0-1-2 by Yeo Johnson method
+
+# Scenario 1: NOT normalizing lrna
+total_data.processed <- predict(preProcess(total_data[,!colnames(total_data_normalize) %in% c('arm')], 
+                                           method=c('zv','nzv',"center", "scale"))
+                          ,total_data) #55 variables left
+
+# Scenario 2: normalizing lrna
+total_data.processed <- predict(preProcess(total_data_normalize[,!colnames(total_data_normalize) %in% c('arm')], 
+                                           method=c('zv','nzv',"center", "scale"))
+                          ,total_data_normalize) #55 variables left
+######################################################################
+# data for lrna1
+data.lrna1 <- total_data.processed[, !colnames(total_data.processed) %in% c('lrna2','cd41','cd42')]
+names(data.lrna1)[2] <- 'y'
+# data for lrna2
+data.lrna2 <- total_data.processed[, !colnames(total_data.processed) %in% c('lrna1','cd41','cd42')]
+names(data.lrna1)[2] <- 'y'
+# data for cd41
+data.cd41 <- total_data.processed[, !colnames(total_data.processed) %in% c('lrna2','lrna1','cd42')]
+names(data.lrna1)[3] <- 'y'
+# data for cd42
+data.cd42 <- total_data.processed[, !colnames(total_data.processed) %in% c('lrna2','cd41','lrna1')]
+names(data.lrna1)[3] <- 'y'
+################################################
+# after zv,nzv,center, scale: no correlated variables deleted
+comat <- cor(data.lrna1[, !colnames(data.lrna1) %in% c('arm')])
+hc = findCorrelation(comat, cutoff=0.9,exact = F) # putt any value as a "cutoff" 
+hc = sort(hc) #empty
+```
